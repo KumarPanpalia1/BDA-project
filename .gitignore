@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+.streamlit/secrets.toml
+spark-warehouse/
+metastore_db/
+derby.log
+# Dataset - keep local only
+creditcard.csv
