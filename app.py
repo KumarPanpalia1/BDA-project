@@ -9,9 +9,16 @@ import altair as alt
 import streamlit as st
 from ledger_logic import (
     binary_label_counts,
+    duplicate_headers,
     fraud_rate_percent,
+    limited_scored_results,
     missing_required_headers,
+    review_decision_labels,
     requires_review,
+    scored_csv_bytes,
+    scored_record_counts,
+    sort_scored_results,
+    validate_scoring_feature_counts,
 )
 try:
     from pyspark.ml import Pipeline
@@ -32,6 +39,7 @@ APP_DIR = Path(__file__).resolve().parent
 DATA_PATH = APP_DIR / "creditcard.csv"
 FEATURE_COLUMNS = ["Time", *[f"V{i}" for i in range(1, 29)], "Amount"]
 LABEL_COLUMN = "Class"
+SCORING_DISPLAY_LIMIT = 10000
 
 if SPARK_IMPORT_ERROR is None:
     DATA_SCHEMA = StructType(
@@ -49,42 +57,46 @@ st.markdown(
     """
     <style>
       @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap');
-      :root { --ink:#17231f; --muted:#66736e; --paper:#f4f6f2; --line:#dce3dc; --mint:#d9f36a; --green:#24634d; --red:#c3503d; }
+            :root { --ink:#14243a; --muted:#617184; --paper:#f7f9fb; --line:#dce4eb; --blue:#245a87; --teal:#287a78; --red:#bd514b; }
     html, body, [class*="css"] { font-family: 'Manrope', sans-serif; }
     .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] { background:var(--paper); color:var(--ink); }
-    [data-testid="stMainBlockContainer"] { padding-top:1.5rem; max-width:1320px; }
+        [data-testid="stMainBlockContainer"] { padding:1.75rem 2.5rem 3rem; max-width:1440px; }
     [data-testid="stHeader"] { background:transparent; }
     [data-testid="stMarkdownContainer"] h1,
     [data-testid="stMarkdownContainer"] h2,
     [data-testid="stMarkdownContainer"] h3,
     [data-testid="stMarkdownContainer"] p,
     [data-testid="stCaptionContainer"] p { color:var(--ink); }
-    [data-testid="stSidebar"] { background:#e8ede7; border-right:1px solid var(--line); }
-      [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p { color:var(--muted); }
-      .brand { font-family:'DM Mono',monospace; font-size:12px; letter-spacing:1px; color:var(--green); }
-      .eyebrow { font-family:'DM Mono',monospace; font-size:11px; color:var(--green); text-transform:uppercase; }
-      .hero { padding:24px 0 18px; border-bottom:1px solid var(--line); margin-bottom:24px; }
-    .hero h1 { color:var(--ink) !important; font-size:34px; line-height:1.1; margin:8px 0; letter-spacing:0; }
+        [data-testid="stSidebar"] { background:#eef3f6; border-right:1px solid var(--line); }
+        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p { color:var(--muted); }
+        .brand { font-family:'DM Mono',monospace; font-size:12px; letter-spacing:1px; color:var(--blue); font-weight:500; }
+        .eyebrow { font-family:'DM Mono',monospace; font-size:11px; color:var(--teal); text-transform:uppercase; }
+        .hero { padding:24px 0 20px; border-bottom:1px solid var(--line); margin-bottom:28px; }
+        .hero h1 { color:var(--ink) !important; font-size:34px; line-height:1.15; margin:8px 0; letter-spacing:0; }
     .hero p { color:var(--muted) !important; margin:0; font-size:14px; }
-      .metric-label { font-family:'DM Mono',monospace; text-transform:uppercase; font-size:10px; color:var(--muted); }
-      .metric-value { font-size:25px; font-weight:800; line-height:1.2; margin-top:6px; }
-      .metric-note { font-size:12px; color:var(--muted); margin-top:4px; }
-      .metric-box { background:#fff; border:1px solid var(--line); border-top:3px solid var(--green); padding:16px; min-height:106px; }
-      .section-title { font-size:18px; font-weight:800; margin:20px 0 8px; }
-      .mono { font-family:'DM Mono',monospace; }
-            div[data-testid="stMetric"] { background:#fff; color:var(--ink); padding:15px 17px; border:1px solid var(--line); border-top:3px solid var(--green); border-radius:3px; }
-            div[data-testid="stMetricLabel"], div[data-testid="stMetricLabel"] p { color:var(--muted) !important; }
-            div[data-testid="stMetricValue"], div[data-testid="stMetricValue"] p { color:var(--ink) !important; }
-            div[data-testid="stMetricDelta"] { color:var(--green) !important; }
-      .stButton > button[kind="primary"] { background:#17231f; border:1px solid #17231f; color:white; }
-      .stButton > button { border-radius:3px; }
-      div[data-testid="stDataFrame"] { border:1px solid var(--line); }
-      .stAlert { border-radius:3px; }
-            @media (max-width: 640px) {
-                [data-testid="stMainBlockContainer"] { padding:1rem 1rem 2rem; }
-                .hero { padding:14px 0 16px; margin-bottom:18px; }
-                .hero h1 { font-size:28px; }
-            }
+        .section-title { font-size:18px; font-weight:800; margin:24px 0 10px; }
+        .mono { font-family:'DM Mono',monospace; }
+        [data-testid="stSidebar"] [data-testid="stRadio"] > label { color:var(--ink); font-size:12px; font-weight:700; text-transform:uppercase; }
+        [data-testid="stSidebar"] [data-testid="stRadio"] [role="radiogroup"] { gap:5px; }
+        [data-testid="stSidebar"] [data-testid="stRadio"] [role="radiogroup"] label { border-radius:5px; padding:8px 10px; }
+        [data-testid="stSidebar"] [data-testid="stRadio"] [role="radiogroup"] label:has(input:checked) { background:#dceaf1; color:var(--blue); font-weight:700; }
+        [data-testid="stSidebar"] [data-testid="stRadio"] [role="radiogroup"] label p { color:inherit; }
+        div[data-testid="stMetric"] { background:#fff; color:var(--ink); padding:15px 17px; border:1px solid var(--line); border-top:3px solid var(--teal); border-radius:5px; }
+        div[data-testid="stMetricLabel"], div[data-testid="stMetricLabel"] p { color:var(--muted) !important; }
+        div[data-testid="stMetricValue"], div[data-testid="stMetricValue"] p { color:var(--ink) !important; }
+        div[data-testid="stMetricDelta"] { color:var(--teal) !important; }
+        .stButton > button[kind="primary"] { background:var(--blue); border:1px solid var(--blue); color:white; }
+        .stButton > button { border-radius:5px; }
+        div[data-testid="stDataFrame"] { border:1px solid var(--line); }
+        .stAlert { border-radius:5px; }
+        @media (max-width: 900px) {
+            [data-testid="stMainBlockContainer"] { padding:1.25rem 1.5rem 2rem; }
+        }
+        @media (max-width: 640px) {
+            [data-testid="stMainBlockContainer"] { padding:1rem 1rem 2rem; }
+            .hero { padding:14px 0 16px; margin-bottom:20px; }
+            .hero h1 { font-size:28px; }
+        }
     </style>
     """,
     unsafe_allow_html=True,
@@ -217,6 +229,8 @@ with st.sidebar:
         label_visibility="collapsed",
     )
     st.divider()
+    st.markdown("**ACTIVE WORKSPACE**")
+    st.caption(current_page)
     st.markdown("**DATA SOURCE**")
     st.caption(DATA_PATH.name if DATA_PATH.exists() else "Dataset not found")
     st.caption("Spark ML · local execution")
@@ -437,18 +451,21 @@ elif current_page == "Transaction scoring":
 
     uploaded = st.file_uploader("Transaction CSV", type=["csv"], help="Required columns: Time, V1 to V28, Amount. Class is optional.")
     review_threshold = st.slider(
-        "Review threshold",
+        "Review threshold (inclusive)",
         min_value=0.0,
         max_value=1.0,
         value=0.5,
         step=0.01,
-        help="Rows with an estimated fraud probability at or above this value are sent for review.",
+        help="Rows at or above this estimated fraud probability are review signals, not confirmed fraud.",
     )
     if uploaded is not None:
         try:
             header = next(csv.reader(io.StringIO(uploaded.getvalue().decode("utf-8-sig").splitlines()[0])))
+            duplicates = duplicate_headers(header)
             missing = missing_required_headers(header, FEATURE_COLUMNS)
-            if missing:
+            if duplicates:
+                st.error("Duplicate CSV headers: " + ", ".join(duplicates) + ". Each column name must appear only once.")
+            elif missing:
                 st.error("Missing required feature columns: " + ", ".join(missing))
             else:
                 spark = get_spark()
@@ -459,36 +476,59 @@ elif current_page == "Transaction scoring":
                 try:
                     score_input = (
                         spark.read.option("header", True)
-                        .option("mode", "FAILFAST")
+                        .option("mode", "PERMISSIVE")
                         .schema(StructType(upload_fields))
                         .csv(temp_path)
                         .select(*FEATURE_COLUMNS)
                     )
+                    invalid_count_columns = [
+                        F.sum(
+                            F.when(
+                                F.col(name).isNull()
+                                | F.isnan(F.col(name))
+                                | (F.abs(F.col(name)) == float("inf")),
+                                1,
+                            ).otherwise(0)
+                        ).alias(name)
+                        for name in FEATURE_COLUMNS
+                    ]
+                    invalid_counts = score_input.agg(*invalid_count_columns).first().asDict()
+                    validate_scoring_feature_counts(invalid_counts, FEATURE_COLUMNS)
                     scored = result["model"].transform(score_input)
                     scored = scored.withColumn("fraud_probability", vector_to_array("probability")[1])
-                    output = scored.select(
+                    review_label, below_threshold_label = review_decision_labels(review_threshold)
+                    scored_output = scored.select(
                         *FEATURE_COLUMNS,
-                        F.round("fraud_probability", 6).alias("fraud_probability"),
-                        F.when(requires_review(F.col("fraud_probability"), review_threshold), "Review")
-                        .otherwise("Likely legitimate")
+                        "fraud_probability",
+                        F.when(requires_review(F.col("fraud_probability"), review_threshold), review_label)
+                        .otherwise(below_threshold_label)
                         .alias("decision"),
-                    ).limit(10000).toPandas()
+                    )
+                    ordered_scored = sort_scored_results(scored_output, F)
+                    total_rows, flagged = scored_record_counts(
+                        ordered_scored, review_threshold, F
+                    )
+                    display_output = limited_scored_results(
+                        ordered_scored, SCORING_DISPLAY_LIMIT
+                    )
+                    with tempfile.TemporaryDirectory(prefix="ledger-scored-") as output_directory:
+                        download_data = scored_csv_bytes(ordered_scored, output_directory)
                 finally:
                     Path(temp_path).unlink(missing_ok=True)
 
-                flagged = int((output["decision"] == "Review").sum())
                 col_a, col_b = st.columns(2)
-                col_a.metric("Scored rows", f"{len(output):,}")
-                col_b.metric("Sent for review", f"{flagged:,}")
-                st.dataframe(output, width="stretch", hide_index=True)
+                col_a.metric("Scored rows", f"{total_rows:,}")
+                col_b.metric("Review signals", f"{flagged:,}")
+                st.dataframe(display_output, width="stretch", hide_index=True)
                 st.download_button(
                     "Download scored results",
-                    data=output.to_csv(index=False).encode("utf-8"),
+                    data=download_data,
                     file_name="fraud_review_results.csv",
                     mime="text/csv",
                     type="primary",
                 )
-                if len(output) == 10000:
-                    st.caption("Showing the first 10,000 rows to keep the review table responsive.")
+                st.caption("Scores are review signals, not confirmed fraud. Rows below the selected threshold are not labeled as legitimate.")
+                if total_rows > SCORING_DISPLAY_LIMIT:
+                    st.caption(f"Showing the highest-scoring {SCORING_DISPLAY_LIMIT:,} rows; the counts and download include all {total_rows:,} uploaded records.")
         except Exception as error:
             st.error(f"Could not score this file: {error}")
